@@ -1,0 +1,10 @@
+name: Check Docker on Self-Hosted Runner
+
+on: [push]
+
+jobs:
+  check-docker:
+    runs-on: self-hosted
+    steps:
+    - name: Check Docker Version
+      run: docker --version
