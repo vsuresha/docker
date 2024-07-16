@@ -1,0 +1,12 @@
+name: Test Runner
+
+on: [push]
+
+jobs:
+  test-runner:
+    runs-on: self-hosted
+    steps:
+    - name: Check Docker Version
+      run: docker --version
+    - name: Run a Test Command
+      run: echo "Runner is working"
