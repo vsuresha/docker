@@ -1,0 +1,105 @@
+name: Container Image Scanning with AquaSec
+description: Custom GitHub Actions to scan the container image with AquaSec
+
+inputs:
+  AQUASEC_APP_NAME:
+    description: 'AquaSec App Name'
+    required: true
+  IMAGE_NAME_TAG:
+    description: 'Container Image Name & Tag'
+    required: true
+  AQUASEC_USER_EMAIL:
+    description: 'AquSec Server User Email'
+    required: true
+  AQUASEC_USER_PASSWORD:
+    description: 'AquSec Server User Password'
+    required: true
+  AQUASEC_SAAS_TOKEN:
+    description: 'AquSec Server SAAS Token'
+    required: true
+  USERNAME_PRUREGISTRY:
+    description: 'PruRegistry Server Username'
+    required: true
+  PASSWORD_PRUREGISTRY:
+    description: 'PruRegistry Server User Password'
+    required: true
+  AQUA_API_URL:
+    description: 'AquSec Server API URL'
+    default: 'https://asia-1.api.cloudsploit.com'
+  AQUA_DASHBOARD_URL:
+    description: 'AquSec Server Dashboard URL'
+    default: 'https://2441398e6f.cloud.aquasec.com'
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Setting PATH for the ScannerCLI
+      shell: bash
+      run: |
+        mkdir bin
+        curl -u ${{ inputs.USERNAME_PRUREGISTRY }}:${{ inputs.PASSWORD_PRUREGISTRY }} -O "${{ env.PRUREGISTRY_URL }}/Aquasec/scannercli" -O "${{ env.PRUREGISTRY_URL }}/jq"
+        mv jq scannercli bin && chmod -R u+x bin
+      env:
+        PRUREGISTRY_URL: "https://artifactory-new.pru.intranet.asia:8443/artifactory/generic-rits-devsecops-oss-local"
+    - run: echo "bin" >> $GITHUB_PATH
+      shell: bash
+    - name: Exctracting Registry Name from the Provided Image
+      id: registry_name
+      shell: bash
+      run: |
+        echo REGISTRY_NAME=$(echo ${{ inputs.IMAGE_NAME_TAG }}) >> "$GITHUB_OUTPUT"
+    - name: Authentication and App Verification
+      shell: bash
+      run: |        
+        echo AQUASEC_API_TOKEN=$(curl -s POST -H 'Content-Type: application/json' -d '{"email":"'${{ inputs.AQUASEC_USER_EMAIL }}'", "password":"'${{ inputs.AQUASEC_USER_PASSWORD }}'"}' "${{ inputs.AQUA_API_URL }}/v2/signin" | jq -r ".data.token") >> "$GITHUB_ENV"
+        echo "AquaSec API Token has been generated successfully"
+
+    - name: Verify Application Exist
+      id: app_label
+      shell: bash
+      run: |
+        echo  APP_LABEL_NAME=$(curl -s GET -H "Content-Type: application/json" -H "Authorization: Bearer ${AQUASEC_API_TOKEN}" ${{ inputs.AQUA_DASHBOARD_URL }}/api/v1/settings/labels/${{ inputs.AQUASEC_APP_NAME }} | jq -r '.name') >> "$GITHUB_OUTPUT"
+    - name: Execute AquaSec Scan
+      shell: bash
+      run: |
+            if [ ${{ steps.app_label.outputs.APP_LABEL_NAME }} = ${{ inputs.AQUASEC_APP_NAME }} ]; then
+              echo App Label Name- '${{ steps.app_label.outputs.APP_LABEL_NAME }}' in AquaSec matches with the provided App Name- '${{ inputs.AQUASEC_APP_NAME }}'
+              echo "Scanning the Image: ${{ inputs.IMAGE_NAME_TAG }} for AquaSec"
+              scannercli scan                             \
+                -H ${{ inputs.AQUA_DASHBOARD_URL }}        \
+                -A ${{ inputs.AQUASEC_SAAS_TOKEN }}        \
+                --no-verify --dockerless --checkonly --collect-sensitive --scan-malware --register \
+                --registry ${{ steps.registry_name.outputs.REGISTRY_NAME }}          \
+                --local ${{ inputs.IMAGE_NAME_TAG }} > aquasec_scan_results.json
+              echo "AquaSec Scanning has been completed for the Image: ${{ inputs.IMAGE_NAME_TAG }}"
+              echo "The complete AquaSec Scanning results are as follow-"
+              cat aquasec_scan_results.json
+
+            else
+              {
+                echo :x: AquaSec Scanning **COULD NOT** be completed because the provided App Name- "${{ inputs.AQUASEC_APP_NAME }}" was not found in AquaSec. This could be due to an incorrect App name provided in the scan function or the Application has not been onboarded to AquaSec yet.
+              }  >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+    - name: Mapping Image to Application Label=${{ inputs.AQUASEC_APP_NAME }}
+      shell: bash
+      run: |
+            echo Looking for the provided Label in the AquSec- ${{ inputs.AQUASEC_APP_NAME }}
+            curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${AQUASEC_API_TOKEN}" -d '{"id": ["${{ steps.registry_name.outputs.REGISTRY_NAME }}","${{ inputs.IMAGE_NAME_TAG }}"],"type": "image"}' ${{ inputs.AQUA_DASHBOARD_URL }}/api/v1/settings/labels/${{ inputs.AQUASEC_APP_NAME }}/attach
+
+    - name: Print Summary
+      shell: bash
+      run: |
+            {
+              echo :white_check_mark: Scanning has been completed for the Image- **"${{ inputs.IMAGE_NAME_TAG }}"** with Summary as below:
+              cat aquasec_scan_results.json | jq -r '.vulnerability_summary'
+              echo '**For further details on AquaSec Scan results Login to "[AquaSec SAAS Portal](${{ inputs.AQUA_DASHBOARD_URL}})"**'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: AquaSec_Scan_Result-${{ github.run_id}}
+        path: aquasec_scan_results.json
+      continue-on-error: true
